@@ -9,6 +9,11 @@ VERIFY_TOKEN = "mytoken123"
 WHATSAPP_TOKEN = os.getenv("WA_TOKEN")
 PHONE_ID = os.getenv("PHONE_ID")
 
+# ===== ROOT (IMPORTANT for Railway health) =====
+@app.route("/")
+def home():
+    return "Bot is running", 200
+
 # ===== VERIFY WEBHOOK =====
 @app.route("/webhook", methods=["GET"])
 def verify():
@@ -58,7 +63,6 @@ def send_message(to, text):
     response = requests.post(url, headers=headers, json=data)
     print("SEND RESPONSE:", response.text)
 
-# ===== RUN SERVER (RAILWAY FIX) =====
+# ===== RUN SERVER =====
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=5000)
