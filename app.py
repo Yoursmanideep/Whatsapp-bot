@@ -8,42 +8,39 @@ app = Flask(__name__)
 # ===== CONFIG =====
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# ===== SIMPLE MEMORY (per user) =====
+# ===== MEMORY =====
 user_memory = {}
 
 # ===== AI FUNCTION =====
 def ask_ai(user_id, text):
     try:
+        if not GROQ_API_KEY:
+            print("❌ GROQ_API_KEY missing")
+            return "hmm my brain not connected rn 😭"
+
         if user_id not in user_memory:
             user_memory[user_id] = []
 
-        # add user message
         user_memory[user_id].append({"role": "user", "content": text})
-
-        # keep last 6 messages (short memory)
         user_memory[user_id] = user_memory[user_id][-6:]
 
-        system_prompt = {
-            "role": "system",
-            "content": """
-You are Rithu Sharma, a 23-year-old girl.
+        messages = [
+            {
+                "role": "system",
+                "content": """You are Rithu Sharma, 23.
 
 Personality:
-- funny, curious, slightly childish sometimes
-- friendly and warm, not dry
-- sometimes teasing or playful
-- not overly flirty, not robotic
-- speaks like a real human texter
+- natural, human-like
+- playful, curious, slightly teasing
+- not robotic, not dry
 
-Behavior:
-- keep replies SHORT (1–2 lines max)
-- sometimes ask questions back
-- sometimes change topic naturally
+Rules:
+- 1–2 lines max
 - no long paragraphs
+- sometimes ask back
 """
-        }
-
-        messages = [system_prompt] + user_memory[user_id]
+            }
+        ] + user_memory[user_id]
 
         res = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
@@ -59,17 +56,21 @@ Behavior:
         )
 
         data = res.json()
+        print("AI RAW RESPONSE:", data)
+
+        # 🔥 CRITICAL FIX
+        if "choices" not in data:
+            return f"API error: {data}"
 
         reply = data["choices"][0]["message"]["content"]
 
-        # store reply
         user_memory[user_id].append({"role": "assistant", "content": reply})
 
-        return reply
+        return reply.strip()
 
     except Exception as e:
-        print("AI ERROR:", e)
-        return "ugh my brain lagged 😭 say that again?"
+        print("AI ERROR:", str(e))
+        return "ugh my brain lagged 😭 try again?"
 
 # ===== ROOT =====
 @app.route("/")
