@@ -4,7 +4,8 @@ import os
 
 app = Flask(__name__)
 
-VERIFY_TOKEN = "mytoken123"  # you will use this later
+# ===== CONFIG =====
+VERIFY_TOKEN = "mytoken123"
 WHATSAPP_TOKEN = os.getenv("WA_TOKEN")
 PHONE_ID = os.getenv("PHONE_ID")
 
@@ -15,14 +16,14 @@ def verify():
     challenge = request.args.get("hub.challenge")
 
     if token == VERIFY_TOKEN:
-        return challenge
+        return challenge, 200
     return "error", 403
 
 # ===== RECEIVE MESSAGE =====
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
-    print("DATA:", data)
+    print("FULL DATA:", data)
 
     try:
         msg = data["entry"][0]["changes"][0]["value"]["messages"][0]
@@ -34,8 +35,8 @@ def webhook():
 
         send_message(user, "got your message")
 
-    except:
-        pass
+    except Exception as e:
+        print("ERROR:", e)
 
     return "ok", 200
 
@@ -54,7 +55,10 @@ def send_message(to, text):
         "text": {"body": text}
     }
 
-    requests.post(url, headers=headers, json=data)
+    response = requests.post(url, headers=headers, json=data)
+    print("SEND RESPONSE:", response.text)
 
+# ===== RUN SERVER (RAILWAY FIX) =====
 if __name__ == "__main__":
-    app.run(port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
