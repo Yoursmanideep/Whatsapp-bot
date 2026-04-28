@@ -9,7 +9,7 @@ VERIFY_TOKEN = "mytoken123"
 WHATSAPP_TOKEN = os.getenv("WA_TOKEN")
 PHONE_ID = os.getenv("PHONE_ID")
 
-# ===== ROOT (IMPORTANT for Railway health) =====
+# ===== ROOT (for Railway health check) =====
 @app.route("/")
 def home():
     return "Bot is running", 200
@@ -31,14 +31,26 @@ def webhook():
     print("FULL DATA:", data)
 
     try:
-        msg = data["entry"][0]["changes"][0]["value"]["messages"][0]
-        user = msg["from"]
-        text = msg["text"]["body"]
+        if "entry" in data:
+            for entry in data["entry"]:
+                for change in entry.get("changes", []):
+                    value = change.get("value", {})
 
-        print("User:", user)
-        print("Message:", text)
+                    # ✅ HANDLE INCOMING MESSAGE
+                    if "messages" in value:
+                        msg = value["messages"][0]
+                        user = msg.get("from")
+                        text = msg.get("text", {}).get("body", "")
 
-        send_message(user, "got your message")
+                        print("User:", user)
+                        print("Message:", text)
+
+                        if user:
+                            send_message(user, "got your message")
+
+                    # ✅ HANDLE STATUS UPDATES (IMPORTANT)
+                    if "statuses" in value:
+                        print("Status update:", value["statuses"])
 
     except Exception as e:
         print("ERROR:", e)
