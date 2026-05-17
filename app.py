@@ -1,98 +1,182 @@
-from flask import Flask, request
-from twilio.twiml.messaging_response import MessagingResponse
-import requests
 import os
+import requests
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    MessageHandler,
+    CommandHandler,
+    ContextTypes,
+    filters,
+)
 
-app = Flask(__name__)
+# =========================
+# CONFIG
+# =========================
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+OMDB_API_KEY = os.getenv("OMDB_API_KEY")
 
-# ===== CONFIG =====
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# ===== MEMORY =====
-user_memory = {}
+# =========================
+# HELPERS
+# =========================
+def get_movie_data(movie_name):
+    url = "https://www.omdbapi.com/"
+    params = {
+        "apikey": OMDB_API_KEY,
+        "t": movie_name,
+        "plot": "short"
+    }
 
-# ===== AI FUNCTION =====
-def ask_ai(user_id, text):
+    response = requests.get(url, params=params, timeout=20)
+    data = response.json()
+
+    if data.get("Response") == "False":
+        return None
+
+    return data
+
+
+def get_rotten_tomatoes_rating(data):
+    ratings = data.get("Ratings", [])
+    for rating in ratings:
+        if rating.get("Source") == "Rotten Tomatoes":
+            return rating.get("Value")
+    return "N/A"
+
+
+def parse_money(value):
+    """
+    Converts strings like '$2,923,706,026' to integer.
+    Returns None if unavailable.
+    """
+    if not value or value in ["N/A", ""]:
+        return None
+
     try:
-        if not GROQ_API_KEY:
-            print("❌ GROQ_API_KEY missing")
-            return "hmm my brain not connected rn 😭"
+        cleaned = value.replace("$", "").replace(",", "")
+        return int(cleaned)
+    except:
+        return None
 
-        if user_id not in user_memory:
-            user_memory[user_id] = []
 
-        user_memory[user_id].append({"role": "user", "content": text})
-        user_memory[user_id] = user_memory[user_id][-6:]
+def classify_movie(imdb_rating, box_office):
+    """
+    Simple conclusion logic.
+    """
+    try:
+        rating = float(imdb_rating)
+    except:
+        rating = 0.0
 
-        messages = [
-            {
-                "role": "system",
-                "content": """You are Rithu Sharma, 23.
+    gross = parse_money(box_office)
 
-Personality:
-- natural, human-like
-- playful, curious, slightly teasing
-- not robotic, not dry
+    if rating >= 8.0:
+        return "🔥 Hit"
+    elif rating >= 7.0:
+        return "👍 Average"
+    elif rating >= 6.0:
+        return "😐 Mixed"
+    else:
+        return "👎 Flop"
 
-Rules:
-- 1–2 lines max
-- no long paragraphs
-- sometimes ask back
-"""
-            }
-        ] + user_memory[user_id]
 
-        res = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "llama-3.1-8b-instant",
-                "messages": messages
-            },
-            timeout=20
-        )
+def format_movie(data):
+    title = data.get("Title", "N/A")
+    year = data.get("Year", "N/A")
+    imdb_rating = data.get("imdbRating", "N/A")
+    imdb_votes = data.get("imdbVotes", "N/A")
+    rotten = get_rotten_tomatoes_rating(data)
+    box_office = data.get("BoxOffice", "N/A")
+    awards = data.get("Awards", "N/A")
+    runtime = data.get("Runtime", "N/A")
+    genre = data.get("Genre", "N/A")
+    director = data.get("Director", "N/A")
+    plot = data.get("Plot", "N/A")
 
-        data = res.json()
-        print("AI RAW RESPONSE:", data)
+    # OMDb usually does not provide budget
+    budget = "N/A"
 
-        # 🔥 CRITICAL FIX
-        if "choices" not in data:
-            return f"API error: {data}"
+    conclusion = classify_movie(imdb_rating, box_office)
 
-        reply = data["choices"][0]["message"]["content"]
+    return f"""
+🎬 {title} ({year})
 
-        user_memory[user_id].append({"role": "assistant", "content": reply})
+⭐ IMDb Rating: {imdb_rating}/10
+🍅 Rotten Tomatoes: {rotten}
+👥 IMDb Votes: {imdb_votes}
 
-        return reply.strip()
+💰 Budget: {budget}
+💵 Box Office: {box_office}
+
+🎭 Genre: {genre}
+⏱ Runtime: {runtime}
+🎬 Director: {director}
+🏆 Awards: {awards}
+
+📈 Verdict: {conclusion}
+
+📝 Plot:
+{plot}
+""".strip()
+
+
+# =========================
+# TELEGRAM HANDLERS
+# =========================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🎬 Welcome to the IMDb Movie Bot!\n\n"
+        "Just send me any movie name.\n\n"
+        "Examples:\n"
+        "• Interstellar\n"
+        "• Avatar\n"
+        "• Pushpa\n"
+        "• The Dark Knight"
+    )
+
+
+async def movie_lookup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    movie_name = update.message.text.strip()
+
+    if not movie_name:
+        await update.message.reply_text("Please send a movie name.")
+        return
+
+    await update.message.reply_text("🔍 Searching...")
+
+    try:
+        data = get_movie_data(movie_name)
+
+        if not data:
+            await update.message.reply_text(
+                "❌ Movie not found.\nTry another title."
+            )
+            return
+
+        result = format_movie(data)
+        await update.message.reply_text(result)
 
     except Exception as e:
-        print("AI ERROR:", str(e))
-        return "ugh my brain lagged 😭 try again?"
+        print("ERROR:", e)
+        await update.message.reply_text(
+            "⚠️ Something went wrong. Please try again."
+        )
 
-# ===== ROOT =====
-@app.route("/")
-def home():
-    return "Rithu bot running 💬", 200
 
-# ===== WHATSAPP HANDLER =====
-@app.route("/whatsapp", methods=["POST"])
-def whatsapp():
-    incoming_msg = request.values.get("Body", "")
-    sender = request.values.get("From")
+# =========================
+# MAIN
+# =========================
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    print("User:", sender)
-    print("Message:", incoming_msg)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, movie_lookup)
+    )
 
-    reply = ask_ai(sender, incoming_msg)
+    print("IMDb Bot is running...")
+    app.run_polling()
 
-    resp = MessagingResponse()
-    resp.message(reply)
 
-    return str(resp)
-
-# ===== RUN =====
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    main()
