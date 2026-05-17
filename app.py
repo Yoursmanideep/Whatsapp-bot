@@ -1,3 +1,7 @@
+# ==========================================
+# PART 1 OF 3 — Imports, Config, Helpers
+# ==========================================
+
 import os
 import re
 import requests
@@ -32,8 +36,9 @@ selected_movies = {}
 
 
 # ==========================================
-# OMDB HELPERS
+# HELPERS
 # ==========================================
+
 def parse_title_and_year(text):
     """
     Supports:
@@ -105,9 +110,35 @@ def classify_movie(imdb_rating):
         return "👎 Flop"
 
 
+def get_safety_label(rated):
+    """
+    Estimate content safety based on official age rating.
+    """
+    if not rated or rated == "N/A":
+        return "❓ Unknown"
+
+    rated_upper = rated.upper()
+
+    kids_safe = ["G", "PG", "U", "UA", "TV-G", "TV-PG"]
+    family_safe = ["PG-13", "TV-14", "12", "12A", "15"]
+    adult = ["R", "NC-17", "A", "X", "TV-MA"]
+
+    if rated_upper in kids_safe:
+        return "👨‍👩‍👧‍👦 Kids Safe"
+
+    if rated_upper in family_safe:
+        return "👪 Family Safe"
+
+    if rated_upper in adult:
+        return "🔞 18+ Content"
+
+    return "👪 Family Safe"
+
+
 def format_movie(data):
     title = data.get("Title", "N/A")
     year = data.get("Year", "N/A")
+    rated = data.get("Rated", "N/A")
     imdb_rating = data.get("imdbRating", "N/A")
     imdb_votes = data.get("imdbVotes", "N/A")
     rotten = get_rotten_tomatoes_rating(data)
@@ -119,6 +150,7 @@ def format_movie(data):
     plot = data.get("Plot", "N/A")
 
     verdict = classify_movie(imdb_rating)
+    safety = get_safety_label(rated)
 
     return f"""
 🎬 {title} ({year})
@@ -126,6 +158,9 @@ def format_movie(data):
 ⭐ IMDb Rating: {imdb_rating}/10
 🍅 Rotten Tomatoes: {rotten}
 👥 IMDb Votes: {imdb_votes}
+
+📺 Rated: {rated}
+🛡 Safety: {safety}
 
 💰 Budget: N/A
 💵 Box Office: {box_office}
@@ -141,7 +176,7 @@ def format_movie(data):
 {plot}
 """.strip()
 # ==========================================
-# PART 2 OF 3 — Buttons and Handlers
+# PART 2 OF 3 — Buttons and Message Handlers
 # ==========================================
 
 def build_movie_buttons():
@@ -156,7 +191,19 @@ def build_movie_buttons():
     return InlineKeyboardMarkup(keyboard)
 
 
-def build_back_button():
+def build_back_to_movie_button():
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "🔙 Back to Movie",
+                callback_data="back_to_movie"
+            )
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def build_back_to_list_button():
     keyboard = [
         [
             InlineKeyboardButton(
@@ -168,18 +215,26 @@ def build_back_button():
     return InlineKeyboardMarkup(keyboard)
 
 
-def build_cast_buttons(cast_names):
+def build_cast_buttons(data):
     """
-    Creates clickable buttons that open Google Images
-    for each actor.
+    OMDb provides actor names only (not character names).
+    We show up to 10 actors, each linking to Google Images.
     """
+    cast_text = data.get("Actors", "N/A")
+
+    if cast_text == "N/A":
+        cast_names = []
+    else:
+        cast_names = [
+            name.strip()
+            for name in cast_text.split(",")
+            if name.strip()
+        ]
+
     keyboard = []
 
+    # Show up to 10 actor buttons
     for actor in cast_names[:10]:
-        actor = actor.strip()
-        if not actor:
-            continue
-
         query = urllib.parse.quote_plus(actor)
         url = (
             "https://www.google.com/search"
@@ -190,6 +245,7 @@ def build_cast_buttons(cast_names):
             InlineKeyboardButton(actor, url=url)
         ])
 
+    # Back to movie button
     keyboard.append([
         InlineKeyboardButton(
             "🔙 Back to Movie",
@@ -213,7 +269,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def send_movie(chat_id, context, data, user_id):
     """
-    Sends poster + movie details + action buttons.
+    Sends poster + movie details.
+    Adds:
+    - 🎭 Show Cast
+    - 🔙 Back to List (only if there was a multi-result search)
     """
     selected_movies[user_id] = data
 
@@ -229,11 +288,32 @@ async def send_movie(chat_id, context, data, user_id):
         except Exception as e:
             print("Poster Error:", e)
 
+    # Build buttons
+    buttons = [
+        [
+            InlineKeyboardButton(
+                "🎭 Show Cast",
+                callback_data="show_cast"
+            )
+        ]
+    ]
+
+    # Show Back to List only if a list exists
+    if user_id in pending_choices and len(pending_choices[user_id]) > 1:
+        buttons.append([
+            InlineKeyboardButton(
+                "🔙 Back to List",
+                callback_data="back_to_list"
+            )
+        ])
+
+    reply_markup = InlineKeyboardMarkup(buttons)
+
     # Send movie details
     await context.bot.send_message(
         chat_id=chat_id,
         text=format_movie(data),
-        reply_markup=build_movie_buttons()
+        reply_markup=reply_markup
     )
 
 
@@ -242,7 +322,7 @@ async def movie_lookup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
     # ======================================
-    # USER CHOOSES NUMBER FROM SEARCH LIST
+    # USER SELECTS NUMBER FROM LIST
     # ======================================
     if user_id in pending_choices and text.isdigit():
         choice = int(text)
@@ -268,17 +348,8 @@ async def movie_lookup(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     data,
                     user_id
                 )
-
             return
-        else:
-            await update.message.reply_text(
-                "❌ Invalid choice.\n"
-                "Use the button below to view the list again.",
-                reply_markup=build_back_button()
-            )
-            return
-
-    # ======================================
+        # ======================================
     # NEW SEARCH
     # ======================================
     title, year = parse_title_and_year(text)
@@ -295,7 +366,21 @@ async def movie_lookup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     movies = data.get("Search", [])
 
-    # Only one result → show directly
+    # If the user explicitly included a year,
+    # and results exist, open the first match directly.
+    if year and len(movies) >= 1:
+        imdb_id = movies[0]["imdbID"]
+        details = get_movie_details(imdb_id)
+
+        await send_movie(
+            update.effective_chat.id,
+            context,
+            details,
+            user_id
+        )
+        return
+
+    # Only one result -> show directly
     if len(movies) == 1:
         imdb_id = movies[0]["imdbID"]
         details = get_movie_details(imdb_id)
@@ -308,7 +393,7 @@ async def movie_lookup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Multiple results → save list
+    # Multiple results -> save up to 10 choices
     pending_choices[user_id] = movies[:10]
 
     message = "🎬 Multiple movies found:\n\n"
@@ -324,10 +409,9 @@ async def movie_lookup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     message += "\nReply with the number of the movie you want."
 
-    await update.message.reply_text(
-        message,
-        reply_markup=build_back_button()
-    )
+    # No Back button here because the user is already on the list
+    await update.message.reply_text(message)
+
 
 # ==========================================
 # PART 3 OF 3 — Callback Buttons and Main
@@ -340,7 +424,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     # ======================================
-    # SHOW CAST BUTTON
+    # SHOW CAST
     # ======================================
     if query.data == "show_cast":
         if user_id not in selected_movies:
@@ -350,25 +434,16 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         data = selected_movies[user_id]
-        cast_text = data.get("Actors", "N/A")
-
-        if cast_text == "N/A":
-            await query.edit_message_text(
-                "❌ Cast information not available."
-            )
-            return
-
-        cast_names = [name.strip() for name in cast_text.split(",")]
 
         await query.edit_message_text(
             "🎭 Cast Members\n\n"
             "Tap any actor name to open Google Images.",
-            reply_markup=build_cast_buttons(cast_names)
+            reply_markup=build_cast_buttons(data)
         )
         return
 
     # ======================================
-    # BACK TO MOVIE BUTTON
+    # BACK TO MOVIE
     # ======================================
     if query.data == "back_to_movie":
         if user_id not in selected_movies:
@@ -379,14 +454,35 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         data = selected_movies[user_id]
 
+        # Rebuild same buttons used in send_movie()
+        buttons = [
+            [
+                InlineKeyboardButton(
+                    "🎭 Show Cast",
+                    callback_data="show_cast"
+                )
+            ]
+        ]
+
+        if (
+            user_id in pending_choices and
+            len(pending_choices[user_id]) > 1
+        ):
+            buttons.append([
+                InlineKeyboardButton(
+                    "🔙 Back to List",
+                    callback_data="back_to_list"
+                )
+            ])
+
         await query.edit_message_text(
             format_movie(data),
-            reply_markup=build_movie_buttons()
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
         return
 
     # ======================================
-    # BACK TO LIST BUTTON
+    # BACK TO LIST
     # ======================================
     if query.data == "back_to_list":
         if user_id not in pending_choices:
@@ -407,24 +503,18 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         message += "\nReply with the number of the movie you want."
 
-        await query.edit_message_text(
-            message,
-            reply_markup=build_back_button()
-        )
+        await query.edit_message_text(message)
         return
 
 
 def main():
-    # Validate environment variables
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN is missing.")
     if not OMDB_API_KEY:
         raise ValueError("OMDB_API_KEY is missing.")
 
-    # Create Telegram application
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_button))
     app.add_handler(
@@ -435,8 +525,6 @@ def main():
     )
 
     print("IMDb Bot is running...")
-
-    # Start polling
     app.run_polling()
 
 
